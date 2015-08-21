@@ -6,7 +6,10 @@
     venv: /var/lib/readthedocs/venv
     app_path: /var/lib/readthedocs/readthedocs.org
     superuser: mheiges
+    password: jbeebee
     email: mheiges@uga.edu
+  environment:
+    DJANGO_SETTINGS_MODULE: readthedocs.settings.sqlite
 
   tasks:
 
@@ -22,6 +25,11 @@
         - libxslt-devel
         - zlib-devel
         - screen
+
+    - service: name=firewalld
+               state=stopped
+               enabled=no
+      sudo: yes
 
     - file: path='{{ venv }}'
             state=directory
@@ -41,38 +49,33 @@
                      app_path='{{ app_path }}'
                      virtualenv='{{ venv }}'
 
-#     - template: src=templates/runvenvcmd.j2
-#                 dest='{{ venv }}/bin/runvenvcmd'
-#                 mode=755
-
-    # get list of existing users in database
+      # get list of existing users in database
     - command: "{{ venv }}/bin/python -c 'from django.contrib.auth.models import User; from django.db.models import Q; users = User.objects.filter(Q(is_superuser=True)).distinct(); print users'"
       args:
         chdir: '{{ app_path }}'
-      environment:
-        DJANGO_SETTINGS_MODULE: readthedocs.settings.sqlite
-      register: users
+      register: superusers
 
-    # only create superuser if not in list of existing users
-    - django_manage: command='createsuperuser --username {{ superuser }} --email {{ email }} --noinput'
-                     app_path='{{ app_path }}'
-                     virtualenv='{{ venv }}'
-      when: users.stdout.find(superuser) == -1
+      # work around 'manage createsuperuser' not taking password as CLI option.
+    - command: "{{ venv }}/bin/python -c \"from django.contrib.auth.models import User; User.objects.create_superuser('{{ superuser }}', '{{ email }}', '{{ password }}')\""
+      args:
+        chdir: '{{ app_path }}'
+      when: superusers.stdout.find(superuser) == -1
 
     - django_manage: command='loaddata test_data'
                      app_path='{{ app_path }}'
                      virtualenv='{{ venv }}'
 
-#     - django_manage: command='runserver  0.0.0.0:80'
-#                      app_path='{{ app_path }}'
-#                      virtualenv='{{ venv }}'
-#       sudo: yes
+      # disable email verification for signup on this disposable, local VM.
+    - lineinfile: dest='{{ app_path }}/readthedocs/settings/base.py'
+                  regexp='^ACCOUNT_EMAIL_VERIFICATION.+'
+                  line='ACCOUNT_EMAIL_VERIFICATION = "none"'
 
-    # Is dangerous to run manage.py as root but ok on a disposable, local VM.
-    - command: 'screen -dm {{ venv }}/bin/python {{ app_path }}/manage.py runserver 0.0.0.0:80'
+      # for unknown reasons, the first invocation of screen dies. So we sacrifice
+      # a dummy screen before screening runserver.
+    - command: 'screen -dm echo'
       sudo: yes
 
-    - service: name=firewalld
-               state=stopped
-               enabled=no
+      # Is dangerous to run manage.py as root but ok on a disposable, local VM.
+    - command: 'screen -L -dm {{ venv }}/bin/python {{ app_path }}/manage.py runserver 0.0.0.0:80'
       sudo: yes
+      register: screen
