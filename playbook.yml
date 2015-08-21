@@ -1,0 +1,78 @@
+---
+- hosts: all
+  sudo: no
+  vars:
+    rtd_root: /var/lib/readthedocs
+    venv: /var/lib/readthedocs/venv
+    app_path: /var/lib/readthedocs/readthedocs.org
+    superuser: mheiges
+    email: mheiges@uga.edu
+
+  tasks:
+
+    - yum: name=epel-release
+      sudo: yes
+
+    - yum: name='{{ item }}'
+      sudo: yes
+      with_items:
+        - git
+        - python-virtualenv
+        - libxml2-devel
+        - libxslt-devel
+        - zlib-devel
+        - screen
+
+    - file: path='{{ venv }}'
+            state=directory
+            owner=vagrant
+            group=vagrant
+            mode=0755
+      sudo: yes
+
+    - git: repo=https://github.com/rtfd/readthedocs.org.git
+           dest='{{ app_path }}'
+           update=no
+
+    - pip: virtualenv='{{ venv }}'
+           requirements='{{ app_path }}/requirements.txt'
+
+    - django_manage: command=migrate
+                     app_path='{{ app_path }}'
+                     virtualenv='{{ venv }}'
+
+#     - template: src=templates/runvenvcmd.j2
+#                 dest='{{ venv }}/bin/runvenvcmd'
+#                 mode=755
+
+    # get list of existing users in database
+    - command: "{{ venv }}/bin/python -c 'from django.contrib.auth.models import User; from django.db.models import Q; users = User.objects.filter(Q(is_superuser=True)).distinct(); print users'"
+      args:
+        chdir: '{{ app_path }}'
+      environment:
+        DJANGO_SETTINGS_MODULE: readthedocs.settings.sqlite
+      register: users
+
+    # only create superuser if not in list of existing users
+    - django_manage: command='createsuperuser --username {{ superuser }} --email {{ email }} --noinput'
+                     app_path='{{ app_path }}'
+                     virtualenv='{{ venv }}'
+      when: users.stdout.find(superuser) == -1
+
+    - django_manage: command='loaddata test_data'
+                     app_path='{{ app_path }}'
+                     virtualenv='{{ venv }}'
+
+#     - django_manage: command='runserver  0.0.0.0:80'
+#                      app_path='{{ app_path }}'
+#                      virtualenv='{{ venv }}'
+#       sudo: yes
+
+    # Is dangerous to run manage.py as root but ok on a disposable, local VM.
+    - command: 'screen -dm {{ venv }}/bin/python {{ app_path }}/manage.py runserver 0.0.0.0:80'
+      sudo: yes
+
+    - service: name=firewalld
+               state=stopped
+               enabled=no
+      sudo: yes
